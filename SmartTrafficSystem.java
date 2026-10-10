@@ -35,7 +35,8 @@ public class SmartTrafficSystem {
                     default:   System.out.println("Invalid option, please choose again.");
                 }
             } catch (Exception ex) {
-                System.out.println("  [!] Error: " + ex.getMessage());
+                String msg = ex.getMessage();
+                System.out.println("  [!] Error: " + (msg != null ? msg : ex));
             }
         }
         System.out.println("Session ended.");
@@ -88,7 +89,13 @@ public class SmartTrafficSystem {
         System.out.print("  Vehicle id: ");
         String id = sc.nextLine().trim();
         System.out.print("  Type (AMBULANCE / FIRE_ENGINE / RESCUE): ");
-        VehicleType type = VehicleType.valueOf(sc.nextLine().trim().toUpperCase());
+        VehicleType type;
+        try {
+            type = VehicleType.valueOf(sc.nextLine().trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            System.out.println("  [!] Unknown vehicle type; use AMBULANCE, FIRE_ENGINE or RESCUE.");
+            return;
+        }
         System.out.print("  Starting junction: ");
         String start = sc.nextLine().trim();
         if (!c.getNetwork().hasJunction(start)) {
@@ -108,6 +115,10 @@ public class SmartTrafficSystem {
         }
         System.out.print("  Destination junction: ");
         String dest = sc.nextLine().trim();
+        if (!c.getNetwork().hasJunction(dest)) {
+            System.out.println("  [!] Unknown destination junction: " + dest);
+            return;
+        }
         System.out.print("  Severity (CRITICAL / HIGH / NORMAL): ");
         Severity sev = parseSeverity(sc.nextLine().trim());
         c.submitRequest(vid, dest, sev);
@@ -120,6 +131,10 @@ public class SmartTrafficSystem {
         String from = sc.nextLine().trim();
         System.out.print("  To junction: ");
         String to = sc.nextLine().trim();
+        if (!c.getNetwork().hasJunction(from) || !c.getNetwork().hasJunction(to)) {
+            System.out.println("  [!] Unknown junction (" + from + " / " + to + "); add it first.");
+            return;
+        }
         switch (type) {
             case "CLOSE":
                 c.queueTrafficEvent(new ClosureEvent(from, to, false));
@@ -260,14 +275,18 @@ public class SmartTrafficSystem {
         System.out.println("\n--- Scenario 2: Road closed WHILE a vehicle is already en route ---");
         EmergencyVehicle amb1 = c.getVehicle("AMB1");
         List<String> originalPath = amb1.getCurrentRoute().getPath();
-        String nextHop = originalPath.get(1);
-        String followingHop = originalPath.size() > 2 ? originalPath.get(2) : originalPath.get(originalPath.size() - 1);
-        c.advanceVehicle("AMB1", nextHop);
-        System.out.println("  AMB1 has physically passed " + nextHop + " (its new last-confirmed junction).");
-        c.queueTrafficEvent(new ClosureEvent(nextHop, followingHop, false));
-        c.processNextTrafficEvent(); // closure is applied AND affected en-route vehicles are auto-recomputed
-        System.out.println("  Note: the recomputed route above starts from " + amb1.getPosition()
-                + " - the junction already passed (J1) was correctly never reused as a start point.");
+        if (originalPath.size() >= 3) {
+            String nextHop = originalPath.get(1);
+            String followingHop = originalPath.get(2);
+            c.advanceVehicle("AMB1", nextHop);
+            System.out.println("  AMB1 has physically passed " + nextHop + " (its new last-confirmed junction).");
+            c.queueTrafficEvent(new ClosureEvent(nextHop, followingHop, false));
+            c.processNextTrafficEvent(); // closure is applied AND affected en-route vehicles are auto-recomputed
+            System.out.println("  Note: the recomputed route above starts from " + amb1.getPosition()
+                    + " - the junction already passed (J1) was correctly never reused as a start point.");
+        } else {
+            System.out.println("  AMB1 has no remaining hops; scenario skipped.");
+        }
 
         System.out.println("\n--- Scenario 3: Equal-severity requests (FIFO), then a severity escalation reorders the queue ---");
         c.submitRequest("FIRE1", "J1", Severity.HIGH);       // arrives first
@@ -317,7 +336,7 @@ enum RouteStatus { VALID, UNREACHABLE }
 class RoadSegment {
     private final String from;
     private final String to;
-    private final double baseTravelTime;
+    private double baseTravelTime;
     private double currentTravelTime;
     private boolean closed;
 
@@ -339,6 +358,13 @@ class RoadSegment {
     void close() { this.closed = true; }
     void reopen() { this.closed = false; this.currentTravelTime = baseTravelTime; }
     void applyCongestion(double factor) { this.currentTravelTime = baseTravelTime * Math.max(1.0, factor); }
+
+    /** Re-adding an existing road redefines its base travel time without
+     *  discarding its current closure state or losing the shared segment object. */
+    void setBaseTravelTime(double time) {
+        this.baseTravelTime = time;
+        if (!this.closed) this.currentTravelTime = time;
+    }
 
     double effectiveTravelTime() { return closed ? Double.POSITIVE_INFINITY : currentTravelTime; }
 
@@ -393,6 +419,9 @@ class CongestionEvent extends TrafficEvent {
 
     CongestionEvent(String from, String to, double factor) {
         super("CONGESTION " + from + "->" + to + " x" + factor);
+        if (Double.isNaN(factor) || Double.isInfinite(factor) || factor < 1.0) {
+            throw new IllegalArgumentException("Slowdown factor must be a finite number >= 1.0 (e.g. 1.5 = 50% slower)");
+        }
         this.from = from;
         this.to = to;
         this.factor = factor;
@@ -460,17 +489,35 @@ class RoadNetwork {
     boolean hasJunction(String id) { return junctions.contains(id); }
     Set<String> getJunctions() { return junctions; }
 
-    void addRoad(String from, String to, double travelTime, boolean twoWay) {
+    boolean addRoad(String from, String to, double travelTime, boolean twoWay) {
+        if (from == null || from.trim().isEmpty() || to == null || to.trim().isEmpty())
+            throw new IllegalArgumentException("Road endpoints must be non-empty junction ids.");
+        if (Double.isNaN(travelTime) || Double.isInfinite(travelTime) || travelTime <= 0)
+            throw new IllegalArgumentException("Travel time must be a positive number (got " + travelTime + ").");
         addJunction(from);
         addJunction(to);
-        addDirectedRoad(from, to, travelTime);
-        if (twoWay) addDirectedRoad(to, from, travelTime);
+        boolean addedNew = addDirectedRoad(from, to, travelTime);
+        if (twoWay) addedNew &= addDirectedRoad(to, from, travelTime);
+        return addedNew;
     }
 
-    private void addDirectedRoad(String from, String to, double time) {
+    /**
+     * Keeps exactly one RoadSegment object per directed edge, shared by the key
+     * index and the adjacency list, so closeRoad()/reopenRoad() always affect the
+     * same object that Dijkstra traverses. Re-adding a road updates it in place.
+     * @return true if this created a new edge, false if an existing edge was updated
+     */
+    private boolean addDirectedRoad(String from, String to, double time) {
+        String key = from + "->" + to;
+        RoadSegment existing = segments.get(key);
+        if (existing != null) {
+            existing.setBaseTravelTime(time);
+            return false;
+        }
         RoadSegment seg = new RoadSegment(from, to, time);
         adjacency.get(from).add(seg);
-        segments.put(seg.key(), seg);
+        segments.put(key, seg);
+        return true;
     }
 
     RoadSegment getSegment(String from, String to) { return segments.get(from + "->" + to); }
@@ -508,9 +555,12 @@ class RoadNetwork {
 
     /**
      * Hand-written Dijkstra's algorithm (positive weights only). A PriorityQueue
-     * is used purely as the min-heap; the relaxation logic is implemented here,
-     * not delegated to a library shortest-path routine. Closed roads are simply
-     * treated as having infinite weight, so they are never selected.
+     * is used purely as the min-heap over immutable (junction, distance) entries;
+     * the relaxation logic is implemented here, not delegated to a library
+     * shortest-path routine. Closed roads are simply treated as having infinite
+     * weight, so they are never selected. Because heap keys never change after
+     * insertion, stale entries are detected on removal instead of mutating keys
+     * inside the heap (which would corrupt the heap ordering).
      */
     Route shortestPath(String source, String destination) {
         if (!hasJunction(source) || !hasJunction(destination)) return Route.unreachable(source, destination);
@@ -521,12 +571,14 @@ class RoadNetwork {
         for (String j : junctions) dist.put(j, Double.POSITIVE_INFINITY);
         dist.put(source, 0.0);
 
-        PriorityQueue<String> minHeap = new PriorityQueue<>(Comparator.comparingDouble(dist::get));
-        minHeap.add(source);
+        PriorityQueue<HeapEntry> minHeap = new PriorityQueue<>(Comparator.comparingDouble(e -> e.distance));
+        minHeap.offer(new HeapEntry(source, 0.0));
 
         while (!minHeap.isEmpty()) {
-            String u = minHeap.poll();
-            if (settled.contains(u)) continue; // stale heap entry (lazy deletion)
+            HeapEntry entry = minHeap.poll();
+            String u = entry.node;
+            if (entry.distance > dist.get(u)) continue; // stale heap entry (lazy deletion)
+            if (settled.contains(u)) continue;          // duplicate entry for a settled junction
             settled.add(u);
             if (u.equals(destination)) break;
 
@@ -539,7 +591,7 @@ class RoadNetwork {
                 if (candidate < dist.get(v)) {
                     dist.put(v, candidate);
                     prev.put(v, u);
-                    minHeap.add(v);
+                    minHeap.offer(new HeapEntry(v, candidate)); // decrease-key via insert + lazy stale check
                 }
             }
         }
@@ -553,7 +605,15 @@ class RoadNetwork {
             if (cur.equals(source)) break;
             cur = prev.get(cur);
         }
+        if (!path.peekFirst().equals(source)) return Route.unreachable(source, destination);
         return Route.valid(path, dist.get(destination));
+    }
+
+    /** Immutable min-heap record: the key is fixed at insertion time. */
+    private static final class HeapEntry {
+        final String node;
+        final double distance;
+        HeapEntry(String node, double distance) { this.node = node; this.distance = distance; }
     }
 }
 
@@ -600,18 +660,26 @@ class EmergencyVehicle {
 
     void setDestination(String destination) { this.destination = destination; }
 
-    /** Encapsulation: a vehicle may only advance to a junction genuinely adjacent to it. */
+    /** Encapsulation: a vehicle may only advance to a junction genuinely adjacent
+     *  to it, and never through a road that is currently closed. */
     void updatePosition(RoadNetwork network, String newJunction) {
         if (!network.hasJunction(newJunction)) throw new IllegalArgumentException("Unknown junction: " + newJunction);
-        boolean adjacent = network.getOutgoing(lastConfirmedJunction).stream().anyMatch(s -> s.getTo().equals(newJunction));
-        if (!adjacent) throw new IllegalStateException(newJunction + " is not directly reachable from " + lastConfirmedJunction);
+        RoadSegment seg = network.getSegment(lastConfirmedJunction, newJunction);
+        if (seg == null) throw new IllegalStateException(newJunction + " is not directly reachable from " + lastConfirmedJunction);
+        if (seg.isClosed()) throw new IllegalStateException("Road " + lastConfirmedJunction + " -> " + newJunction + " is closed; vehicle cannot use it.");
         this.lastConfirmedJunction = newJunction;
         if (destination != null && newJunction.equals(destination)) status = VehicleStatus.ARRIVED;
     }
 
     void assignRoute(Route route) {
         this.currentRoute = route;
-        this.status = (route.getStatus() == RouteStatus.UNREACHABLE) ? VehicleStatus.UNREACHABLE : VehicleStatus.EN_ROUTE;
+        if (route.getStatus() == RouteStatus.UNREACHABLE) {
+            this.status = VehicleStatus.UNREACHABLE;
+        } else if (destination != null && destination.equals(lastConfirmedJunction)) {
+            this.status = VehicleStatus.ARRIVED; // route computed from (and to) the junction already reached
+        } else {
+            this.status = VehicleStatus.EN_ROUTE;
+        }
     }
 
     @Override
@@ -668,7 +736,7 @@ class TrafficController {
     private final RoadNetwork network = new RoadNetwork();
     private final ArrayDeque<TrafficEvent> eventQueue = new ArrayDeque<>();      // strict FIFO
     private final PriorityQueue<RoutingRequest> requestQueue = new PriorityQueue<>(RoutingRequest.PRIORITY_ORDER);
-    private final Map<String, EmergencyVehicle> vehicles = new HashMap<>();
+    private final Map<String, EmergencyVehicle> vehicles = new LinkedHashMap<>();
     private final Map<String, RoutingRequest> requestsById = new HashMap<>();
     private final RoutePlanner planner = new DijkstraRoutePlanner();
     private int requestCounter = 0;
@@ -676,15 +744,24 @@ class TrafficController {
     RoadNetwork getNetwork() { return network; }
     void addJunction(String id) { network.addJunction(id); }
     void addRoad(String from, String to, double time, boolean twoWay) { network.addRoad(from, to, time, twoWay); }
-    void registerVehicle(EmergencyVehicle v) { vehicles.put(v.getId(), v); }
+
+    void registerVehicle(EmergencyVehicle v) {
+        if (v == null) throw new IllegalArgumentException("Vehicle must not be null.");
+        if (!network.hasJunction(v.getPosition()))
+            throw new IllegalArgumentException("Unknown starting junction: " + v.getPosition());
+        vehicles.put(v.getId(), v);
+    }
+
     EmergencyVehicle getVehicle(String id) { return vehicles.get(id); }
     Collection<EmergencyVehicle> getAllVehicles() { return vehicles.values(); }
 
     String submitRequest(String vehicleId, String destination, Severity severity) {
+        EmergencyVehicle v = vehicles.get(vehicleId);
+        if (v == null) throw new IllegalArgumentException("Unknown vehicle: " + vehicleId);
+        if (!network.hasJunction(destination))
+            throw new IllegalArgumentException("Unknown destination junction: " + destination);
         String id = "REQ" + (++requestCounter);
         RoutingRequest req = new RoutingRequest(id, vehicleId, destination, severity);
-        EmergencyVehicle v = vehicles.get(vehicleId);
-        if (v != null) v.setDestination(destination);
         requestQueue.offer(req);
         requestsById.put(id, req);
         System.out.println("  Queued " + req);
@@ -713,16 +790,27 @@ class TrafficController {
         System.out.println("Processing traffic event #" + event.getSequence() + ": " + event.getDescription());
         network.applyTrafficEvent(event); // polymorphic dispatch to ClosureEvent/CongestionEvent
 
-        // The network just changed: any vehicle currently en route must be
+        // The network just changed: any vehicle currently en route (including one
+        // previously marked UNREACHABLE, in case a road reopened) must be
         // recomputed from its last CONFIRMED junction, never from its original start.
         for (EmergencyVehicle v : vehicles.values()) {
-            if (v.getStatus() == VehicleStatus.EN_ROUTE && v.getDestination() != null) {
+            if ((v.getStatus() == VehicleStatus.EN_ROUTE || v.getStatus() == VehicleStatus.UNREACHABLE)
+                    && v.getDestination() != null) {
                 Route recomputed = planner.planRoute(network, v.getPosition(), v.getDestination());
                 v.assignRoute(recomputed);
                 System.out.println("  Recomputed route for " + v.getId() + " from " + v.getPosition() + ": " + recomputed);
             }
         }
         return true;
+    }
+
+    /** Every route calculation must run on an up-to-date network: apply all
+     *  pending traffic events (in arrival order) before computing any route. */
+    private void applyPendingTrafficEvents() {
+        if (eventQueue.isEmpty()) return;
+        System.out.println("  [i] Applying " + eventQueue.size()
+                + " pending traffic event(s) first so the network is up to date.");
+        while (!eventQueue.isEmpty()) processNextTrafficEvent();
     }
 
     int processAllTrafficEvents() {
@@ -732,13 +820,14 @@ class TrafficController {
     }
 
     boolean processNextRequest() {
+        if (requestQueue.peek() == null) { System.out.println("  No pending routing requests."); return false; }
+        applyPendingTrafficEvents(); // network must be updated before the next route calculation
         RoutingRequest req = requestQueue.poll();
-        if (req == null) { System.out.println("  No pending routing requests."); return false; }
         requestsById.remove(req.getId());
         EmergencyVehicle v = vehicles.get(req.getVehicleId());
-        if (v == null) { System.out.println("  [!] Unknown vehicle for " + req); return true; }
 
         System.out.println("Processing " + req);
+        v.setDestination(req.getDestination()); // destination is confirmed when the request is processed
         Route route = planner.planRoute(network, v.getPosition(), req.getDestination()); // from current position, not original start
         v.assignRoute(route);
         if (route.getStatus() == RouteStatus.UNREACHABLE) {
@@ -758,8 +847,17 @@ class TrafficController {
     void advanceVehicle(String vehicleId, String toJunction) {
         EmergencyVehicle v = vehicles.get(vehicleId);
         if (v == null) throw new IllegalArgumentException("Unknown vehicle: " + vehicleId);
+        applyPendingTrafficEvents(); // movement must be checked against an up-to-date network
         v.updatePosition(network, toJunction);
         System.out.println("  " + vehicleId + " advanced to " + toJunction + " (status=" + v.getStatus() + ")");
+        // Re-plan from the new last-confirmed junction so the stored route never
+        // starts at a location the vehicle has already passed.
+        if (v.getDestination() != null
+                && (v.getStatus() == VehicleStatus.EN_ROUTE || v.getStatus() == VehicleStatus.UNREACHABLE)) {
+            Route recomputed = planner.planRoute(network, v.getPosition(), v.getDestination());
+            v.assignRoute(recomputed);
+            System.out.println("  Route recomputed from " + v.getPosition() + ": " + recomputed);
+        }
     }
 
     List<RoutingRequest> pendingRequestsSnapshot() {
