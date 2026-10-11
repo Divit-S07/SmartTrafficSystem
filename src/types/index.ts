@@ -25,6 +25,12 @@ export interface RoadSegment {
   oneWay: boolean;
 }
 
+export interface RoadUpdate {
+  travelTime?: number;
+  oneWay?: boolean;
+  closed?: boolean;
+}
+
 export interface Route {
   path: string[];
   totalTravelTime: number;

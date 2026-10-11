@@ -4,6 +4,7 @@ import type {
   EmergencyVehicle,
   Junction,
   RoadSegment,
+  RoadUpdate,
   Route,
   RoutingRequest,
   Severity,
@@ -61,14 +62,14 @@ export function useTrafficStore() {
   );
 
   const addRoad = useCallback(
-    (from: string, to: string, travelTime: number, oneWay: boolean) => {
+    (from: string, to: string, travelTime: number, oneWay: boolean, closed = false) => {
       if (from === to) return false;
       if (!junctions.some((j) => j.id === from) || !junctions.some((j) => j.id === to))
         return false;
       if (roads.some((r) => r.from === from && r.to === to)) return false;
 
       const newSegments: RoadSegment[] = [
-        { from, to, baseTravelTime: travelTime, currentTravelTime: travelTime, closed: false, oneWay },
+        { from, to, baseTravelTime: travelTime, currentTravelTime: travelTime, closed, oneWay },
       ];
       if (!oneWay) {
         newSegments.push({
@@ -76,18 +77,85 @@ export function useTrafficStore() {
           to: from,
           baseTravelTime: travelTime,
           currentTravelTime: travelTime,
-          closed: false,
+          closed,
           oneWay: false,
         });
       }
       setRoads((prev) => [...prev, ...newSegments]);
       logActivity(
         'SYSTEM',
-        `Road ${from}\u2192${to}${oneWay ? ' (one-way)' : ' (two-way)'} added with travel time ${travelTime} min.`,
+        `Road ${from}\u2192${to}${oneWay ? ' (one-way)' : ' (two-way)'} added with travel time ${travelTime} min${closed ? ' — closed' : ''}.`,
       );
       return true;
     },
     [junctions, roads, logActivity],
+  );
+
+  const updateJunctionPosition = useCallback((id: string, x: number, y: number) => {
+    setJunctions((prev) => {
+      if (!prev.some((j) => j.id === id)) return prev;
+      return prev.map((j) => (j.id === id ? { ...j, x, y } : j));
+    });
+  }, []);
+
+  const updateRoad = useCallback(
+    (from: string, to: string, changes: RoadUpdate): boolean => {
+      const primary = roads.find((r) => r.from === from && r.to === to);
+      if (!primary) return false;
+
+      setRoads((prev) => {
+        let next = prev.map((r) => {
+          const inGroup = (r.from === from && r.to === to) || (r.from === to && r.to === from);
+          if (!inGroup) return r;
+          const updated = { ...r };
+          if (changes.travelTime !== undefined) {
+            updated.baseTravelTime = changes.travelTime;
+            updated.currentTravelTime = changes.travelTime;
+          }
+          if (changes.closed !== undefined) updated.closed = changes.closed;
+          if (changes.oneWay !== undefined && r.from === from && r.to === to) {
+            updated.oneWay = changes.oneWay;
+          }
+          return updated;
+        });
+
+        if (changes.oneWay === true) {
+          next = next.filter((r) => !(r.from === to && r.to === from));
+        } else if (changes.oneWay === false) {
+          const reverseExists = next.some((r) => r.from === to && r.to === from);
+          if (reverseExists) {
+            next = next.map((r) => (r.from === to && r.to === from ? { ...r, oneWay: false } : r));
+          } else {
+            const src = next.find((r) => r.from === from && r.to === to);
+            if (src) {
+              next = [
+                ...next,
+                {
+                  from: to,
+                  to: from,
+                  baseTravelTime: src.baseTravelTime,
+                  currentTravelTime: src.currentTravelTime,
+                  closed: src.closed,
+                  oneWay: false,
+                },
+              ];
+            }
+          }
+        }
+        return next;
+      });
+
+      const notes: string[] = [];
+      if (changes.travelTime !== undefined) notes.push(`travel time set to ${changes.travelTime} min`);
+      if (changes.oneWay !== undefined) notes.push(`changed to ${changes.oneWay ? 'one-way' : 'two-way'}`);
+      if (changes.closed !== undefined) notes.push(changes.closed ? 'closed' : 'reopened');
+      logActivity(
+        changes.closed !== undefined ? 'TRAFFIC_UPDATE' : 'SYSTEM',
+        `Road ${from}\u2192${to} ${notes.join(', ')}.`,
+      );
+      return true;
+    },
+    [roads, logActivity],
   );
 
   const registerVehicle = useCallback(
@@ -397,6 +465,8 @@ export function useTrafficStore() {
     activity,
     addJunction,
     addRoad,
+    updateJunctionPosition,
+    updateRoad,
     registerVehicle,
     submitRequest,
     escalateRequest,
