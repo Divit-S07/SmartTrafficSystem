@@ -17,6 +17,8 @@ export interface Junction {
 }
 
 export interface RoadSegment {
+  /** Backend document id — used for update/close/delete API calls. */
+  id?: string;
   from: string;
   to: string;
   baseTravelTime: number;
@@ -45,6 +47,8 @@ export interface EmergencyVehicle {
   lastConfirmedJunction: string;
   destination: string | null;
   status: VehicleStatus;
+  /** Dispatch priority held by the backend (defaults to NORMAL). */
+  priority?: Severity;
   currentRoute: Route | null;
 }
 

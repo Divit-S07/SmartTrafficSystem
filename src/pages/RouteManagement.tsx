@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { TrafficStore } from '@/store/useTrafficStore';
 import type { Severity, Route as RouteType } from '@/types';
-import { EmptyState, ErrorBanner, SectionHeader } from '@/components/ui/Common';
+import { BackendError, ErrorBanner, LoadingState, SectionHeader } from '@/components/ui/Common';
 import { SeverityBadge, RouteStatusBadge } from '@/components/ui/Badges';
 import {
   Route as RouteIcon,
@@ -14,6 +14,7 @@ import {
   MapPin,
   Navigation,
   Zap,
+  Loader2,
 } from 'lucide-react';
 
 interface RouteManagementProps {
@@ -21,10 +22,23 @@ interface RouteManagementProps {
 }
 
 export function RouteManagement({ store }: RouteManagementProps) {
-  const { vehicles, junctions, requests, submitRequest, escalateRequest, processNextRequest, findRoute } = store;
+  const {
+    vehicles,
+    junctions,
+    requests,
+    loading,
+    loadError,
+    reload,
+    submitRequest,
+    escalateRequest,
+    processNextRequest,
+    findRoute,
+  } = store;
 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [fVehicle, setFVehicle] = useState('');
   const [fDestination, setFDestination] = useState('');
   const [fSeverity, setFSeverity] = useState<Severity>('NORMAL');
@@ -56,18 +70,29 @@ export function RouteManagement({ store }: RouteManagementProps) {
     }
   };
 
-  const handlePreviewRoute = () => {
+  const handlePreviewRoute = async () => {
     setError('');
     if (!fVehicle || !fDestination) { setError('Select a vehicle and destination to preview the route.'); return; }
     const vehicle = vehicles.find((v) => v.id === fVehicle);
     if (!vehicle) return;
-    setRouteResult(findRoute(vehicle.lastConfirmedJunction, fDestination));
+
+    setPreviewing(true);
+    try {
+      setRouteResult(await findRoute(vehicle.lastConfirmedJunction, fDestination));
+    } finally {
+      setPreviewing(false);
+    }
   };
 
-  const handleProcessNext = () => {
+  const handleProcessNext = async () => {
     setError('');
-    const result = processNextRequest();
-    if (!result) setError('No pending requests to process.');
+    setBusy(true);
+    try {
+      const result = await processNextRequest();
+      if (!result) setError('No pending requests to process.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleEscalate = () => {
@@ -86,12 +111,17 @@ export function RouteManagement({ store }: RouteManagementProps) {
         subtitle="Submit priority routing requests and process the queue"
         icon={<RouteIcon className="w-5 h-5" />}
         action={
-          <button onClick={handleProcessNext} className="btn-primary" disabled={pendingRequests.length === 0}>
-            <Play className="w-4 h-4" /> Process Next Request
+          <button onClick={() => void handleProcessNext()} className="btn-primary" disabled={busy || pendingRequests.length === 0}>
+            <Play className="w-4 h-4" /> {busy ? 'Processing\u2026' : 'Process Next Request'}
           </button>
         }
       />
 
+      {loadError && <BackendError message={loadError} onRetry={() => void reload()} retrying={loading} />}
+
+      {loading ? (
+        <LoadingState label="Loading vehicles and junctions from the backend&hellip;" />
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card p-5">
           <h3 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
@@ -112,7 +142,7 @@ export function RouteManagement({ store }: RouteManagementProps) {
                 <select className="select-field" value={fVehicle} onChange={(e) => { setFVehicle(e.target.value); setRouteResult(null); }}>
                   <option value="">Select vehicle...</option>
                   {vehicles.map((v) => (
-                    <option key={v.id} value={v.id}>{v.id} \u2014 {v.type.replace('_', ' ')} (at {v.lastConfirmedJunction})</option>
+                    <option key={v.id} value={v.id}>{v.id} &mdash; {v.type.replace('_', ' ')} (at {v.lastConfirmedJunction})</option>
                   ))}
                 </select>
               </div>
@@ -147,8 +177,9 @@ export function RouteManagement({ store }: RouteManagementProps) {
                 <button onClick={handleSubmit} className="btn-primary flex-1 justify-center">
                   <Plus className="w-4 h-4" /> Submit Request
                 </button>
-                <button onClick={handlePreviewRoute} className="btn-secondary" disabled={!fVehicle || !fDestination}>
-                  <Navigation className="w-4 h-4" /> Preview Route
+                <button onClick={() => void handlePreviewRoute()} className="btn-secondary" disabled={previewing || !fVehicle || !fDestination}>
+                  {previewing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Navigation className="w-4 h-4" />}
+                  {previewing ? 'Computing\u2026' : 'Preview Route'}
                 </button>
               </div>
             </div>
@@ -158,8 +189,14 @@ export function RouteManagement({ store }: RouteManagementProps) {
         <div className="card p-5">
           <h3 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
             <MapPin className="w-4 h-4 text-cyan-400" /> Route Preview
+            <span className="text-[10px] font-normal text-slate-600">computed by the backend</span>
           </h3>
-          {!routeResult ? (
+          {previewing ? (
+            <div className="flex flex-col items-center gap-3 py-10">
+              <Loader2 className="h-6 w-6 animate-spin text-cyan-400" />
+              <p className="text-sm text-slate-500">Running Dijkstra on the server\u2026</p>
+            </div>
+          ) : !routeResult ? (
             <p className="text-sm text-slate-500 py-4 text-center">
               Select a vehicle and destination, then click "Preview Route" to see the computed path.
             </p>
@@ -214,6 +251,7 @@ export function RouteManagement({ store }: RouteManagementProps) {
           )}
         </div>
       </div>
+      )}
 
       <div className="card p-5">
         <h3 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
@@ -228,7 +266,7 @@ export function RouteManagement({ store }: RouteManagementProps) {
               <select className="select-field" value={escalateId} onChange={(e) => setEscalateId(e.target.value)}>
                 <option value="">Select request...</option>
                 {pendingRequests.map((r) => (
-                  <option key={r.id} value={r.id}>{r.id} \u2014 {r.vehicleId} \u2192 {r.destination} ({r.severity})</option>
+                  <option key={r.id} value={r.id}>{r.id} &mdash; {r.vehicleId} &rarr; {r.destination} ({r.severity})</option>
                 ))}
               </select>
             </div>
@@ -264,7 +302,7 @@ export function RouteManagement({ store }: RouteManagementProps) {
                   }`}>{idx + 1}</span>
                   <span className="font-mono text-sm text-slate-300">{req.id}</span>
                   <SeverityBadge severity={req.severity} />
-                  <span className="text-xs text-slate-500 hidden sm:block">{req.vehicleId} \u2192 {req.destination}</span>
+                  <span className="text-xs text-slate-500 hidden sm:block">{req.vehicleId} &rarr; {req.destination}</span>
                 </div>
                 <span className="text-xs text-slate-600">#{req.arrivalSequence}</span>
               </div>
@@ -287,7 +325,7 @@ export function RouteManagement({ store }: RouteManagementProps) {
                   <div className="flex items-center gap-3 min-w-0">
                     <span className="font-mono text-sm text-slate-400">{req.id}</span>
                     <SeverityBadge severity={req.severity} />
-                    <span className="text-xs text-slate-500">{req.vehicleId} \u2192 {req.destination}</span>
+                    <span className="text-xs text-slate-500">{req.vehicleId} &rarr; {req.destination}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     {vehicle?.currentRoute && <RouteStatusBadge status={vehicle.currentRoute.status} />}

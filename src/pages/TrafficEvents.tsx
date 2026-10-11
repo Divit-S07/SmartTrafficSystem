@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { TrafficStore } from '@/store/useTrafficStore';
 import type { EventType } from '@/types';
-import { EmptyState, ErrorBanner, SectionHeader } from '@/components/ui/Common';
+import { BackendError, EmptyState, ErrorBanner, LoadingState, SectionHeader } from '@/components/ui/Common';
 import { EventTypeBadge, EventStatusBadge } from '@/components/ui/Badges';
 import {
   CalendarClock,
@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   Clock,
   X,
+  Loader2,
 } from 'lucide-react';
 
 interface TrafficEventsProps {
@@ -20,9 +21,19 @@ interface TrafficEventsProps {
 }
 
 export function TrafficEvents({ store }: TrafficEventsProps) {
-  const { events, roads, queueTrafficEvent, processNextEvent, processAllEvents } = store;
+  const {
+    events,
+    roads,
+    loading,
+    loadError,
+    reload,
+    queueTrafficEvent,
+    processNextEvent,
+    processAllEvents,
+  } = store;
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState<null | 'next' | 'all' | 'queue'>(null);
 
   const [eType, setEType] = useState<EventType>('CLOSURE');
   const [eFrom, setEFrom] = useState('');
@@ -32,7 +43,7 @@ export function TrafficEvents({ store }: TrafficEventsProps) {
   const pendingEvents = events.filter((e) => e.status === 'PENDING').sort((a, b) => a.sequence - b.sequence);
   const processedEvents = events.filter((e) => e.status === 'PROCESSED');
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     setError('');
     if (!eFrom || !eTo) { setError('Select both source and destination junctions.'); return; }
     if (eFrom === eTo) { setError('Source and destination must be different.'); return; }
@@ -40,17 +51,46 @@ export function TrafficEvents({ store }: TrafficEventsProps) {
       setError(`Road ${eFrom}\u2192${eTo} does not exist in the network.`);
       return;
     }
-    if (eType === 'CONGESTION') {
-      const f = parseFloat(eFactor);
-      if (isNaN(f) || f < 1.0) { setError('Congestion factor must be a number \u2265 1.0.'); return; }
-      queueTrafficEvent('CONGESTION', eFrom, eTo, false, f);
-    } else if (eType === 'CLOSURE') {
-      queueTrafficEvent('CLOSURE', eFrom, eTo, false, null);
-    } else {
-      queueTrafficEvent('REOPEN', eFrom, eTo, true, null);
+    const factor = eType === 'CONGESTION' ? parseFloat(eFactor) : null;
+    if (eType === 'CONGESTION' && (isNaN(factor as number) || (factor as number) < 1.0)) {
+      setError('Congestion factor must be a number \u2265 1.0.');
+      return;
     }
-    setShowAdd(false);
-    setEFrom(''); setETo(''); setEFactor(''); setEType('CLOSURE');
+
+    setBusy('queue');
+    try {
+      const result = await queueTrafficEvent(eType, eFrom, eTo, factor);
+      if (!result.ok) {
+        setError(result.error ?? 'Failed to queue the traffic event.');
+        return;
+      }
+      setShowAdd(false);
+      setEFrom(''); setETo(''); setEFactor(''); setEType('CLOSURE');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleProcessNext = async () => {
+    setError('');
+    setBusy('next');
+    try {
+      const id = await processNextEvent();
+      if (!id) setError('No pending traffic events to process.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleProcessAll = async () => {
+    setError('');
+    setBusy('all');
+    try {
+      const count = await processAllEvents();
+      if (count === 0) setError('No pending traffic events to process.');
+    } finally {
+      setBusy(null);
+    }
   };
 
   const eventIcons: Record<EventType, React.ReactNode> = {
@@ -67,19 +107,28 @@ export function TrafficEvents({ store }: TrafficEventsProps) {
         icon={<CalendarClock className="w-5 h-5" />}
         action={
           <div className="flex gap-2 flex-wrap">
-            <button onClick={() => processNextEvent()} className="btn-secondary" disabled={pendingEvents.length === 0}>
-              <Play className="w-4 h-4" /> Process Next
+            <button onClick={() => void handleProcessNext()} className="btn-secondary" disabled={busy !== null || pendingEvents.length === 0}>
+              {busy === 'next' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              {busy === 'next' ? 'Processing\u2026' : 'Process Next'}
             </button>
-            <button onClick={() => processAllEvents()} className="btn-secondary" disabled={pendingEvents.length === 0}>
-              <FastForward className="w-4 h-4" /> Process All
+            <button onClick={() => void handleProcessAll()} className="btn-secondary" disabled={busy !== null || pendingEvents.length === 0}>
+              {busy === 'all' ? <Loader2 className="w-4 h-4 animate-spin" /> : <FastForward className="w-4 h-4" />}
+              {busy === 'all' ? 'Processing\u2026' : 'Process All'}
             </button>
-            <button onClick={() => { setError(''); setShowAdd(true); }} className="btn-primary" disabled={roads.length === 0}>
+            <button onClick={() => { setError(''); setShowAdd(true); }} className="btn-primary" disabled={busy !== null || roads.length === 0}>
               <Plus className="w-4 h-4" /> Queue Event
             </button>
           </div>
         }
       />
 
+      {loadError && <BackendError message={loadError} onRetry={() => void reload()} retrying={loading} />}
+      {error && !showAdd && <ErrorBanner message={error} />}
+
+      {loading ? (
+        <LoadingState label="Loading traffic events from the backend&hellip;" />
+      ) : (
+      <>
       <div className="card p-5">
         <h3 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
           <Clock className="w-4 h-4 text-amber-400" /> Pending Events Queue (FIFO)
@@ -143,6 +192,8 @@ export function TrafficEvents({ store }: TrafficEventsProps) {
           />
         </div>
       )}
+      </>
+      )}
 
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -197,14 +248,16 @@ export function TrafficEvents({ store }: TrafficEventsProps) {
               </div>
               {eType === 'CONGESTION' && (
                 <div>
-                  <label className="text-sm text-slate-400 mb-1 block">Congestion Factor (\u2265 1.0)</label>
+                  <label className="text-sm text-slate-400 mb-1 block">Congestion Factor (&ge; 1.0)</label>
                   <input className="input-field" type="number" min="1.0" step="0.1" placeholder="e.g. 1.5 for 50% slower" value={eFactor} onChange={(e) => setEFactor(e.target.value)} />
-                  <p className="text-xs text-slate-500 mt-1">Current travel time = base time \u00d7 factor. Must be at least 1.0.</p>
+                  <p className="text-xs text-slate-500 mt-1">Current travel time = base time &times; factor. Must be at least 1.0.</p>
                 </div>
               )}
               <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setShowAdd(false)} className="btn-secondary">Cancel</button>
-                <button onClick={handleAdd} className="btn-primary">Queue Event</button>
+                <button onClick={() => setShowAdd(false)} className="btn-secondary" disabled={busy === 'queue'}>Cancel</button>
+                <button onClick={() => void handleAdd()} className="btn-primary" disabled={busy === 'queue'}>
+                  {busy === 'queue' ? <><Loader2 className="w-4 h-4 animate-spin" /> Queueing&hellip;</> : 'Queue Event'}
+                </button>
               </div>
             </div>
           </div>

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { TrafficStore } from '@/store/useTrafficStore';
 import type { RoadUpdate } from '@/types';
-import { ErrorBanner, SectionHeader } from '@/components/ui/Common';
+import { BackendError, ErrorBanner, LoadingState, SectionHeader } from '@/components/ui/Common';
 import { Modal } from '@/components/ui/Modal';
 import { NetworkMap } from '@/components/road-network/NetworkMap';
 import { DetailsPanel } from '@/components/road-network/DetailsPanel';
@@ -20,14 +20,27 @@ interface RoadNetworkProps {
 }
 
 export function RoadNetwork({ store }: RoadNetworkProps) {
-  const { junctions, roads, vehicles, addJunction, addRoad, updateRoad, updateJunctionPosition } =
-    store;
+  const {
+    junctions,
+    roads,
+    vehicles,
+    loading,
+    loadError,
+    reload,
+    addJunction,
+    addRoad,
+    updateRoad,
+    moveJunction,
+    updateJunctionPosition,
+  } = store;
 
   const [selection, setSelection] = useState<Selection>(null);
   const [showAddJunction, setShowAddJunction] = useState(false);
   const [showAddRoad, setShowAddRoad] = useState(false);
   const [junctionError, setJunctionError] = useState('');
   const [roadError, setRoadError] = useState('');
+  const [panelError, setPanelError] = useState('');
+  const [busy, setBusy] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
 
   const [jId, setJId] = useState('');
@@ -45,9 +58,12 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
     [],
   );
   const clearSelection = useCallback(() => setSelection(null), []);
+
   const handleUpdateRoad = useCallback(
-    (from: string, to: string, changes: RoadUpdate) => {
-      updateRoad(from, to, changes);
+    async (from: string, to: string, changes: RoadUpdate) => {
+      setPanelError('');
+      const result = await updateRoad(from, to, changes);
+      if (!result.ok) setPanelError(result.error ?? 'Failed to update the road.');
     },
     [updateRoad],
   );
@@ -72,7 +88,7 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
     setShowAddRoad(true);
   };
 
-  const handleAddJunction = () => {
+  const handleAddJunction = async () => {
     setJunctionError('');
     const id = jId.trim().toUpperCase();
     if (!id) {
@@ -87,17 +103,24 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
       setJunctionError(`Junction ${id} already exists.`);
       return;
     }
-    const position = findFreeJunctionPosition(junctions);
-    if (!addJunction(id, position.x, position.y)) {
-      setJunctionError('Could not add this junction. Please try again.');
-      return;
+
+    setBusy(true);
+    try {
+      const position = findFreeJunctionPosition(junctions);
+      const result = await addJunction(id, position.x, position.y);
+      if (!result.ok) {
+        setJunctionError(result.error ?? 'Could not add this junction. Please try again.');
+        return;
+      }
+      setSelection({ kind: 'junction', id });
+      setShowAddJunction(false);
+      setJId('');
+    } finally {
+      setBusy(false);
     }
-    setSelection({ kind: 'junction', id });
-    setShowAddJunction(false);
-    setJId('');
   };
 
-  const handleAddRoad = () => {
+  const handleAddRoad = async () => {
     setRoadError('');
     if (!rFrom || !rTo) {
       setRoadError('Choose both a source and a destination junction.');
@@ -116,15 +139,20 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
       setRoadError(`A road between ${rFrom} and ${rTo} already exists.`);
       return;
     }
-    const oneWay = rType === 'ONE_WAY';
-    const closed = rStatus === 'CLOSED';
-    if (!addRoad(rFrom, rTo, time, oneWay, closed)) {
-      setRoadError('Could not create the road. Make sure both junctions exist.');
-      return;
+
+    setBusy(true);
+    try {
+      const result = await addRoad(rFrom, rTo, time, rType === 'ONE_WAY', rStatus === 'CLOSED');
+      if (!result.ok) {
+        setRoadError(result.error ?? 'Could not create the road. Make sure both junctions exist.');
+        return;
+      }
+      setSelection({ kind: 'road', from: rFrom, to: rTo });
+      setShowAddRoad(false);
+      resetRoadForm();
+    } finally {
+      setBusy(false);
     }
-    setSelection({ kind: 'road', from: rFrom, to: rTo });
-    setShowAddRoad(false);
-    resetRoadForm();
   };
 
   const isRoadSelected = (from: string, to: string) =>
@@ -138,14 +166,19 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
         icon={<Network className="w-5 h-5" />}
         action={
           <div className="flex gap-2">
-            <button type="button" onClick={openJunctionModal} className="btn-secondary">
+            <button
+              type="button"
+              onClick={openJunctionModal}
+              className="btn-secondary"
+              disabled={loading || busy}
+            >
               <CircleDot className="w-4 h-4" /> Add Junction
             </button>
             <button
               type="button"
               onClick={() => openRoadModal()}
               className="btn-primary"
-              disabled={junctions.length < 2}
+              disabled={loading || busy || junctions.length < 2}
               title={junctions.length < 2 ? 'Add at least two junctions first' : 'Create a road'}
             >
               <Plus className="w-4 h-4" /> Add Road
@@ -154,35 +187,43 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
         }
       />
 
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <NetworkMap
-            junctions={junctions}
-            vehicles={vehicles}
-            visualRoads={visualRoads}
-            selection={selection}
-            showGrid={showGrid}
-            onToggleGrid={() => setShowGrid((v) => !v)}
-            onJunctionMoved={updateJunctionPosition}
-            onJunctionClick={selectJunction}
-            onRoadClick={selectRoad}
-            onClearSelection={clearSelection}
-            onAddJunction={openJunctionModal}
-          />
-        </div>
+      {loadError && <BackendError message={loadError} onRetry={() => void reload()} retrying={loading} />}
 
-        <div className="space-y-4 lg:h-[600px] lg:overflow-y-auto lg:pr-1">
-          <DetailsPanel
-            selection={selection}
-            junctions={junctions}
-            vehicles={vehicles}
-            visualRoads={visualRoads}
-            onSelectJunction={selectJunction}
-            onSelectRoad={selectRoad}
-            onClearSelection={clearSelection}
-            onUpdateRoad={handleUpdateRoad}
-            onAddRoadFrom={openRoadModal}
-          />
+      {loading ? (
+        <LoadingState label="Loading the road network from the backend&hellip;" />
+      ) : (
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <NetworkMap
+              junctions={junctions}
+              vehicles={vehicles}
+              visualRoads={visualRoads}
+              selection={selection}
+              showGrid={showGrid}
+              onToggleGrid={() => setShowGrid((v) => !v)}
+              onJunctionMoved={moveJunction}
+              onJunctionDragEnd={(id, x, y) => void updateJunctionPosition(id, x, y)}
+              onJunctionClick={selectJunction}
+              onRoadClick={selectRoad}
+              onClearSelection={clearSelection}
+              onAddJunction={openJunctionModal}
+            />
+          </div>
+
+          <div className="space-y-4 lg:h-[600px] lg:overflow-y-auto lg:pr-1">
+            {panelError && <ErrorBanner message={panelError} />}
+
+            <DetailsPanel
+              selection={selection}
+              junctions={junctions}
+              vehicles={vehicles}
+              visualRoads={visualRoads}
+              onSelectJunction={selectJunction}
+              onSelectRoad={selectRoad}
+              onClearSelection={clearSelection}
+              onUpdateRoad={handleUpdateRoad}
+              onAddRoadFrom={openRoadModal}
+            />
 
           <div className="card p-4">
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
@@ -268,6 +309,7 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
           </div>
         </div>
       </div>
+      )}
 
       <Modal
         open={showAddJunction}
@@ -279,8 +321,8 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
             <button type="button" onClick={() => setShowAddJunction(false)} className="btn-secondary">
               Cancel
             </button>
-            <button type="button" onClick={handleAddJunction} className="btn-primary">
-              Add Junction
+            <button type="button" onClick={handleAddJunction} className="btn-primary" disabled={busy}>
+              {busy ? 'Adding\u2026' : 'Add Junction'}
             </button>
           </>
         }
@@ -320,8 +362,8 @@ export function RoadNetwork({ store }: RoadNetworkProps) {
             <button type="button" onClick={() => setShowAddRoad(false)} className="btn-secondary">
               Cancel
             </button>
-            <button type="button" onClick={handleAddRoad} className="btn-primary">
-              <Plus className="w-4 h-4" /> Create Road
+            <button type="button" onClick={handleAddRoad} className="btn-primary" disabled={busy}>
+              <Plus className="w-4 h-4" /> {busy ? 'Creating\u2026' : 'Create Road'}
             </button>
           </>
         }

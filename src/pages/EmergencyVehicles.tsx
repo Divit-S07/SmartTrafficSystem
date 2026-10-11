@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { TrafficStore } from '@/store/useTrafficStore';
 import type { VehicleType } from '@/types';
-import { EmptyState, ErrorBanner, SectionHeader } from '@/components/ui/Common';
+import { BackendError, EmptyState, ErrorBanner, LoadingState, SectionHeader } from '@/components/ui/Common';
 import { Modal } from '@/components/ui/Modal';
 import { VehicleStatusBadge, VehicleTypeBadge, RouteStatusBadge } from '@/components/ui/Badges';
 import {
@@ -11,6 +11,7 @@ import {
   MapPin,
   Navigation,
   ArrowRight,
+  Loader2,
 } from 'lucide-react';
 
 interface EmergencyVehiclesProps {
@@ -18,9 +19,19 @@ interface EmergencyVehiclesProps {
 }
 
 export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
-  const { vehicles, junctions, roads, registerVehicle, advanceVehicle } = store;
+  const {
+    vehicles,
+    junctions,
+    roads,
+    loading,
+    loadError,
+    reload,
+    registerVehicle,
+    advanceVehicle,
+  } = store;
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -39,17 +50,36 @@ export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
     return matchSearch && matchType && matchStatus;
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     setError('');
     const id = vId.trim().toUpperCase();
     if (!id) { setError('Vehicle ID is required.'); return; }
     if (!vPosition) { setError('Starting junction is required.'); return; }
     if (vehicles.some((v) => v.id === id)) { setError(`Vehicle ${id} already exists.`); return; }
-    if (registerVehicle(id, vType, vPosition)) {
+
+    setBusy(true);
+    try {
+      const result = await registerVehicle(id, vType, vPosition);
+      if (!result.ok) {
+        setError(result.error ?? 'Failed to register vehicle. Ensure the junction exists.');
+        return;
+      }
       setShowAdd(false);
       setVId(''); setVType('AMBULANCE'); setVPosition('');
-    } else {
-      setError('Failed to register vehicle. Ensure the junction exists.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAdvance = async (target: string) => {
+    if (!advanceVehicleId) return;
+    setBusy(true);
+    try {
+      const ok = await advanceVehicle(advanceVehicleId, target);
+      if (ok) setAdvanceVehicleId(null);
+      else setError('Failed to move the vehicle. The road may be closed or missing.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -68,12 +98,20 @@ export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
           <button
             onClick={() => { setError(''); setShowAdd(true); }}
             className="btn-primary"
-            disabled={junctions.length === 0}
+            disabled={loading || junctions.length === 0}
           >
             <Plus className="w-4 h-4" /> Register Vehicle
           </button>
         }
       />
+
+      {loadError && <BackendError message={loadError} onRetry={() => void reload()} retrying={loading} />}
+
+      {loading ? (
+        <LoadingState label="Loading the vehicle fleet from the backend&hellip;" />
+      ) : (
+      <>
+      {error && !showAdd && !advanceVehicleId && <ErrorBanner message={error} />}
 
       {vehicles.length > 0 && (
         <div className="flex flex-col sm:flex-row gap-3">
@@ -173,6 +211,8 @@ export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
           })}
         </div>
       )}
+      </>
+      )}
 
       <Modal
         open={showAdd}
@@ -181,8 +221,10 @@ export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
         subtitle="Add a new vehicle to the emergency fleet"
         footer={
           <>
-            <button onClick={() => setShowAdd(false)} className="btn-secondary">Cancel</button>
-            <button onClick={handleAdd} className="btn-primary">Register</button>
+            <button onClick={() => setShowAdd(false)} className="btn-secondary" disabled={busy}>Cancel</button>
+            <button onClick={() => void handleAdd()} className="btn-primary" disabled={busy}>
+              {busy ? 'Registering\u2026' : 'Register'}
+            </button>
           </>
         }
       >
@@ -215,9 +257,10 @@ export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
         onClose={() => setAdvanceVehicleId(null)}
         title="Advance Vehicle"
         subtitle={advanceTarget ? `${advanceTarget.id} is at ${advanceTarget.lastConfirmedJunction}` : ''}
-        footer={<button onClick={() => setAdvanceVehicleId(null)} className="btn-secondary">Cancel</button>}
+        footer={<button onClick={() => setAdvanceVehicleId(null)} className="btn-secondary" disabled={busy}>Cancel</button>}
       >
         <div className="space-y-3">
+          {error && <ErrorBanner message={error} />}
           <p className="text-sm text-slate-400">Select an adjacent junction to move the vehicle to. The road must be open.</p>
           {adjacentJunctions.length === 0 ? (
             <p className="text-sm text-amber-400">No adjacent open roads from current position.</p>
@@ -229,18 +272,14 @@ export function EmergencyVehicles({ store }: EmergencyVehiclesProps) {
                 return (
                   <button
                     key={target}
-                    onClick={() => {
-                      if (advanceVehicleId) {
-                        advanceVehicle(advanceVehicleId, target);
-                        setAdvanceVehicleId(null);
-                      }
-                    }}
-                    className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-slate-800/40 hover:bg-slate-700/40 border border-slate-700/50 hover:border-cyan-500/30 transition-all"
+                    disabled={busy}
+                    onClick={() => void handleAdvance(target)}
+                    className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-slate-800/40 hover:bg-slate-700/40 border border-slate-700/50 hover:border-cyan-500/30 transition-all disabled:opacity-60"
                   >
                     <div className="flex items-center gap-3">
-                      <ArrowRight className="w-4 h-4 text-cyan-400" />
+                      {busy ? <Loader2 className="w-4 h-4 animate-spin text-cyan-400" /> : <ArrowRight className="w-4 h-4 text-cyan-400" />}
                       <span className="font-mono text-sm text-slate-200">
-                        {advanceTarget?.lastConfirmedJunction} \u2192 {target}
+                        {advanceTarget?.lastConfirmedJunction} &rarr; {target}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">

@@ -1,5 +1,5 @@
 import type { TrafficStore } from '@/store/useTrafficStore';
-import { EmptyState } from '@/components/ui/Common';
+import { BackendError, EmptyState, LoadingState } from '@/components/ui/Common';
 import {
   Network,
   Ambulance,
@@ -21,7 +21,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ store, onNavigate }: DashboardProps) {
-  const { junctions, roads, vehicles, requests, events } = store;
+  const { junctions, roads, vehicles, requests, events, loading, loaded, loadError, reload } = store;
 
   const closedRoads = roads.filter((r) => r.closed);
   const congestedRoads = roads.filter((r) => !r.closed && r.currentTravelTime > r.baseTravelTime);
@@ -40,6 +40,11 @@ export function Dashboard({ store, onNavigate }: DashboardProps) {
 
   return (
     <div className="space-y-6 fade-in-up">
+      {loadError && <BackendError message={loadError} onRetry={() => void reload()} retrying={loading} />}
+      {loading && <LoadingState label="Loading the traffic system from the backend&hellip;" />}
+
+      {!loading && (
+      <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {stats.map((stat) => (
           <button
@@ -183,7 +188,7 @@ export function Dashboard({ store, onNavigate }: DashboardProps) {
                     <span className="text-sm font-mono text-slate-300">{req.id}</span>
                     <SeverityBadge severity={req.severity} />
                   </div>
-                  <span className="text-xs text-slate-500">{req.vehicleId} \u2192 {req.destination}</span>
+                  <span className="text-xs text-slate-500">{req.vehicleId} &rarr; {req.destination}</span>
                 </div>
               ))}
             </div>
@@ -220,7 +225,7 @@ export function Dashboard({ store, onNavigate }: DashboardProps) {
         </div>
       </div>
 
-      {junctions.length === 0 && vehicles.length === 0 && events.length === 0 && (
+      {loaded && junctions.length === 0 && vehicles.length === 0 && events.length === 0 && (
         <div className="card p-6">
           <EmptyState
             icon={<TrendingUp className="w-8 h-8" />}
@@ -230,6 +235,8 @@ export function Dashboard({ store, onNavigate }: DashboardProps) {
             onAction={() => onNavigate('road-network')}
           />
         </div>
+      )}
+      </>
       )}
     </div>
   );

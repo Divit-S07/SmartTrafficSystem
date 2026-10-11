@@ -257,8 +257,8 @@ export function DetailsPanel({
           )}
           <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
             {road.closed
-              ? 'Closed roads are not available as routes. Changes apply to this visualisation only.'
-              : 'Changes apply to this visualisation only.'}
+              ? 'Closed roads are not used as routes. The change is saved on the backend and reloaded on refresh.'
+              : 'Travel time and direction changes are saved on the backend and reloaded on refresh.'}
           </p>
         </div>
       </PanelShell>

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { AlertCircle, PlusCircle, Inbox } from 'lucide-react';
+import { AlertCircle, Loader2, PlusCircle, Inbox, RefreshCw } from 'lucide-react';
 
 interface EmptyStateProps {
   icon?: ReactNode;
@@ -37,6 +37,52 @@ export function ErrorBanner({ message }: { message: string }) {
   );
 }
 
+interface LoadingStateProps {
+  label?: string;
+  /** Renders inside a card, matching the surrounding panels. */
+  inCard?: boolean;
+}
+
+/** Full-page/section spinner shown while the backend request is in flight. */
+export function LoadingState({ label = 'Loading from the backend\u2026', inCard = false }: LoadingStateProps) {
+  const body = (
+    <div className="flex flex-col items-center justify-center gap-3 py-14 text-center">
+      <Loader2 className="h-7 w-7 animate-spin text-cyan-400" />
+      <p className="text-sm text-slate-500">{label}</p>
+    </div>
+  );
+  return inCard ? <div className="card">{body}</div> : body;
+}
+
+interface BackendErrorProps {
+  message: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+}
+
+/** Shown when the backend could not be reached or answered with an error. */
+export function BackendError({ message, onRetry, retrying }: BackendErrorProps) {
+  return (
+    <div className="card border-red-500/20 bg-red-500/5">
+      <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10 text-red-400">
+          <AlertCircle className="h-6 w-6" />
+        </div>
+        <div>
+          <h3 className="text-slate-300 font-semibold">Could not reach the backend</h3>
+          <p className="mt-1 max-w-md text-sm text-slate-500">{message}</p>
+        </div>
+        {onRetry && (
+          <button type="button" onClick={onRetry} className="btn-secondary" disabled={retrying}>
+            <RefreshCw className={`h-4 w-4 ${retrying ? 'animate-spin' : ''}`} />
+            {retrying ? 'Retrying\u2026' : 'Retry'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface SectionHeaderProps {
   title: string;
   subtitle?: string;
@@ -62,3 +108,4 @@ export function SectionHeader({ title, subtitle, icon, action }: SectionHeaderPr
     </div>
   );
 }
+

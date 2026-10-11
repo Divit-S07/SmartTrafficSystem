@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: smart-traffic-backend
+  mongodb:
+    # Connection comes from the environment — never hardcode credentials.
+    # The local default needs no authentication. For a remote/authenticated
+    # server set, in the shell (or CI secret store):
+    #   MONGODB_URI=mongodb://user:pass@host:27017
+    # Database name is always smart_traffic_db (MONGODB_DATABASE overrides it).
+    uri: ${MONGODB_URI:mongodb://localhost:27017}
+    database: ${MONGODB_DATABASE:smart_traffic_db}
+  data:
+    mongodb:
+      # Required for @Indexed(unique=true) / @CompoundIndex(unique=true) to be
+      # applied to MongoDB on startup (Spring Data defaults this to false).
+      auto-index-creation: true
+
+server:
+  port: 8080

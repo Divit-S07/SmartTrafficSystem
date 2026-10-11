@@ -28,6 +28,8 @@ interface NetworkMapProps {
   showGrid: boolean;
   onToggleGrid: () => void;
   onJunctionMoved: (id: string, x: number, y: number) => void;
+  /** Fired once when a drag ends — the hook persists the new position. */
+  onJunctionDragEnd: (id: string, x: number, y: number) => void;
   onJunctionClick: (id: string) => void;
   onRoadClick: (from: string, to: string) => void;
   onClearSelection: () => void;
@@ -42,6 +44,7 @@ function NetworkCanvas({
   showGrid,
   onToggleGrid,
   onJunctionMoved,
+  onJunctionDragEnd,
   onJunctionClick,
   onRoadClick,
   onClearSelection,
@@ -102,11 +105,16 @@ function NetworkCanvas({
     (changes) => {
       for (const change of changes) {
         if (change.type === 'position' && change.position) {
+          // Move locally on every drag frame so the canvas stays responsive,
+          // but only persist once the drag has actually finished.
           onJunctionMoved(change.id, change.position.x, change.position.y);
+          if (change.dragging === false) {
+            onJunctionDragEnd(change.id, change.position.x, change.position.y);
+          }
         }
       }
     },
-    [onJunctionMoved],
+    [onJunctionMoved, onJunctionDragEnd],
   );
 
   const handleNodeClick = useCallback<NodeMouseHandler>(

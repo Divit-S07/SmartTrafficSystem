@@ -69,7 +69,7 @@ export function ActivityLog({ store }: ActivityLogProps) {
           <EmptyState
             icon={<ScrollText className="w-8 h-8" />}
             title="No activity recorded"
-            message="Actions performed across the system \u2014 adding junctions, registering vehicles, submitting requests, processing events and advancing vehicles \u2014 will appear here in chronological order."
+            message="Actions performed across the system &mdash; adding junctions, registering vehicles, submitting requests, processing events and advancing vehicles &mdash; will appear here in chronological order."
           />
         </div>
       ) : filtered.length === 0 ? (
@@ -87,7 +87,7 @@ export function ActivityLog({ store }: ActivityLogProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="text-xs font-medium text-slate-500">{cat.label}</span>
-                      <span className="text-xs text-slate-600">\u00b7</span>
+                      <span className="text-xs text-slate-600">&middot;</span>
                       <span className="text-xs font-mono text-slate-600">{formatTime(entry.timestamp)}</span>
                     </div>
                     <p className="text-sm text-slate-300">{entry.message}</p>
