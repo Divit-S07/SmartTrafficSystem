@@ -6,6 +6,13 @@
 const API_BASE = window.location.origin;
 let currentData = null;
 
+// Draggable Junction State
+let draggedJunction = null;
+let hoveredJunction = null;
+let isDragging = false;
+let dragOffset = { x: 0, y: 0 };
+let hasMovedDuringDrag = false;
+
 // Preset layout coordinates for demo junctions (J1 to J12)
 const JUNCTION_COORDS = {
   J1:  { x: 90,  y: 190 },
@@ -23,6 +30,7 @@ const JUNCTION_COORDS = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  setupCanvasInteractions();
   refreshAll();
   setInterval(refreshAll, 3000); // Live poll every 3 seconds
 });
@@ -41,6 +49,15 @@ async function fetchStatus() {
     if (!res.ok) return;
     const data = await res.json();
     currentData = data;
+
+    // Synchronize coordinates saved in database/server (unless currently being dragged)
+    if (data.junctionPositions) {
+      for (const [jId, coords] of Object.entries(data.junctionPositions)) {
+        if (!isDragging || draggedJunction !== jId) {
+          JUNCTION_COORDS[jId] = { x: coords.x, y: coords.y };
+        }
+      }
+    }
 
     renderBadges(data);
     renderVehicles(data.vehicles || []);
@@ -316,6 +333,12 @@ function renderCanvas(data) {
     }
   });
 
+  // Calculate road state counts for Live Legend
+  let clearCount = 0;
+  let congestedCount = 0;
+  let closedCount = 0;
+  let routeCount = 0;
+
   // 1. Draw Roads
   roads.forEach(r => {
     const p1 = JUNCTION_COORDS[r.from];
@@ -323,21 +346,26 @@ function renderCanvas(data) {
     if (!p1 || !p2) return;
 
     const isRoute = activeRouteSegments.has(`${r.from}->${r.to}`);
+    if (isRoute) routeCount++;
 
     ctx.save();
     if (r.isClosed) {
+      closedCount++;
       ctx.strokeStyle = "#f43f5e";
       ctx.lineWidth = 2.5;
       ctx.setLineDash([5, 5]);
     } else if (r.currentTravelTime > r.baseTravelTime) {
+      congestedCount++;
       ctx.strokeStyle = "#f59e0b";
       ctx.lineWidth = 3;
     } else if (isRoute) {
+      clearCount++;
       ctx.strokeStyle = "#06b6d4";
       ctx.lineWidth = 4;
       ctx.shadowColor = "#06b6d4";
       ctx.shadowBlur = 8;
     } else {
+      clearCount++;
       ctx.strokeStyle = "#334155";
       ctx.lineWidth = 2;
     }
@@ -357,28 +385,67 @@ function renderCanvas(data) {
     ctx.fillText(label, midX - 10, midY - 6);
   });
 
+  // Update Legend Counter Badges
+  const bClear = document.getElementById("badgeClear");
+  const bCong = document.getElementById("badgeCongested");
+  const bClosed = document.getElementById("badgeClosed");
+  const bRoute = document.getElementById("badgeRoute");
+  if (bClear) bClear.innerText = clearCount;
+  if (bCong) bCong.innerText = congestedCount;
+  if (bClosed) bClosed.innerText = closedCount;
+  if (bRoute) bRoute.innerText = routeCount;
+
   // 2. Draw Junction Nodes
   junctions.forEach(j => {
     const pt = JUNCTION_COORDS[j];
     if (!pt) return;
 
+    const isDragged = (j === draggedJunction);
+    const isHovered = (j === hoveredJunction);
+
+    // Draggable hover/active glow ring
+    if (isDragged || isHovered) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 20, 0, Math.PI * 2);
+      ctx.strokeStyle = isDragged ? "#f59e0b" : "#38bdf8";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
-    ctx.fillStyle = "#1e293b";
+    ctx.fillStyle = isDragged ? "#334155" : "#1e293b";
     ctx.fill();
-    ctx.strokeStyle = "#38bdf8";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = isDragged ? "#f59e0b" : "#38bdf8";
+    ctx.lineWidth = isDragged ? 2.5 : 2;
     ctx.stroke();
 
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = "#38bdf8";
+    ctx.fillStyle = isDragged ? "#f59e0b" : "#38bdf8";
     ctx.fill();
 
     ctx.font = "bold 11px sans-serif";
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
     ctx.fillText(j, pt.x, pt.y + 26);
+
+    // If dragged, show live floating coordinate indicator
+    if (isDragged) {
+      const coordStr = `(${Math.round(pt.x)}, ${Math.round(pt.y)})`;
+      ctx.font = "10px monospace";
+      const tw = ctx.measureText(coordStr).width;
+      ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+      ctx.fillRect(pt.x - tw / 2 - 4, pt.y - 34, tw + 8, 16);
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pt.x - tw / 2 - 4, pt.y - 34, tw + 8, 16);
+      ctx.fillStyle = "#fcd34d";
+      ctx.fillText(coordStr, pt.x, pt.y - 22);
+    }
   });
 
   // 3. Draw Vehicle Markers
@@ -404,6 +471,124 @@ function renderCanvas(data) {
     ctx.textAlign = "center";
     ctx.fillText(v.id.substring(0, 3), vx, vy + 3);
   });
+}
+
+// ------------------------------------------------------------------
+// Canvas Drag & Drop Interactions for Junctions (Mouse + Touch)
+// ------------------------------------------------------------------
+function setupCanvasInteractions() {
+  const canvas = document.getElementById("networkCanvas");
+  if (!canvas || canvas.dataset.interactionsBound) return;
+  canvas.dataset.interactionsBound = "true";
+
+  function getCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  }
+
+  function findJunctionAt(x, y) {
+    if (!currentData || !currentData.junctions) return null;
+    for (const j of currentData.junctions) {
+      const pt = JUNCTION_COORDS[j];
+      if (pt) {
+        const dist = Math.hypot(x - pt.x, y - pt.y);
+        if (dist <= 22) return j;
+      }
+    }
+    return null;
+  }
+
+  const onDown = (e) => {
+    const pos = getCoords(e);
+    const hit = findJunctionAt(pos.x, pos.y);
+    if (hit) {
+      draggedJunction = hit;
+      isDragging = true;
+      hasMovedDuringDrag = false;
+      dragOffset.x = pos.x - JUNCTION_COORDS[hit].x;
+      dragOffset.y = pos.y - JUNCTION_COORDS[hit].y;
+      canvas.style.cursor = "grabbing";
+      if (e.cancelable) e.preventDefault();
+      if (currentData) renderCanvas(currentData);
+    }
+  };
+
+  const onMove = (e) => {
+    const pos = getCoords(e);
+    if (isDragging && draggedJunction) {
+      hasMovedDuringDrag = true;
+      const clampedX = Math.max(25, Math.min(canvas.width - 25, pos.x - dragOffset.x));
+      const clampedY = Math.max(25, Math.min(canvas.height - 25, pos.y - dragOffset.y));
+      JUNCTION_COORDS[draggedJunction] = { x: clampedX, y: clampedY };
+      if (e.cancelable) e.preventDefault();
+      if (currentData) renderCanvas(currentData);
+    } else {
+      const hit = findJunctionAt(pos.x, pos.y);
+      if (hit !== hoveredJunction) {
+        hoveredJunction = hit;
+        if (currentData) renderCanvas(currentData);
+      }
+      canvas.style.cursor = hit ? "grab" : "default";
+    }
+  };
+
+  const onUp = async () => {
+    if (isDragging && draggedJunction) {
+      const savedJ = draggedJunction;
+      const finalPos = JUNCTION_COORDS[savedJ];
+      isDragging = false;
+      draggedJunction = null;
+      hoveredJunction = null;
+      canvas.style.cursor = "default";
+      if (currentData) renderCanvas(currentData);
+      if (hasMovedDuringDrag) {
+        await saveJunctionPosition(savedJ, finalPos.x, finalPos.y);
+      }
+    }
+  };
+
+  canvas.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+
+  canvas.addEventListener("touchstart", onDown, { passive: false });
+  window.addEventListener("touchmove", onMove, { passive: false });
+  window.addEventListener("touchend", onUp);
+  canvas.addEventListener("mouseleave", () => {
+    if (!isDragging && hoveredJunction) {
+      hoveredJunction = null;
+      if (currentData) renderCanvas(currentData);
+    }
+  });
+}
+
+async function saveJunctionPosition(id, x, y) {
+  try {
+    const res = await fetch(`${API_BASE}/api/junction/position`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, x: Math.round(x), y: Math.round(y) })
+    });
+    if (res.ok) {
+      const feed = document.getElementById("logFeed");
+      if (feed) {
+        const item = document.createElement("div");
+        item.style.color = "#34d399";
+        item.innerText = `[Position Saved] Junction ${id} set to (${Math.round(x)}, ${Math.round(y)}) and saved to Database.`;
+        feed.appendChild(item);
+        feed.scrollTop = feed.scrollHeight;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to save junction position:", err);
+  }
 }
 
 // ------------------------------------------------------------------
@@ -507,10 +692,13 @@ async function handleVehicleRegister(e) {
   e.preventDefault();
   const id = document.getElementById("vehId").value.trim().toUpperCase();
   const type = document.getElementById("vehType").value;
-  const start = document.getElementById("vehStart").value;
+  const dropdownStart = document.getElementById("vehStart").value;
+  const customInput = document.getElementById("vehStartCustom");
+  const customStart = customInput ? customInput.value.trim().toUpperCase() : "";
+  const start = customStart || dropdownStart;
 
   if (!id || !start) {
-    alert("Please enter a vehicle ID and choose a starting junction (add a junction first if none exist).");
+    alert("Please enter a vehicle ID and choose or enter a starting junction.");
     return;
   }
 
@@ -522,6 +710,7 @@ async function handleVehicleRegister(e) {
   if (res.ok) {
     alert(`Vehicle ${id} registered at ${start}!`);
     document.getElementById("vehId").value = "";
+    if (customInput) customInput.value = "";
     await refreshAll();
   }
 }

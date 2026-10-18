@@ -51,6 +51,9 @@ public class SmartTrafficSystem {
         // Load configuration
         dbService.init();
         supabaseService.init();
+        globalController.loadPositionsFromFile();
+        globalController.initDefaultPositions();
+        dbService.loadJunctionsFromDb(globalController);
 
         // System starts clean and empty. Sample dataset loads only when requested.
         log(">> System initialized with empty network. Ready for manual entry or sample load.");
@@ -91,6 +94,7 @@ public class SmartTrafficSystem {
         server.createContext("/api/status", new StatusHandler());
         server.createContext("/api/clear", new ClearHandler());
         server.createContext("/api/junction", new AddJunctionHandler());
+        server.createContext("/api/junction/position", new UpdateJunctionPositionHandler());
         server.createContext("/api/junction/delete", new DeleteJunctionHandler());
         server.createContext("/api/road", new AddRoadHandler());
         server.createContext("/api/road/delete", new DeleteRoadHandler());
@@ -195,8 +199,8 @@ public class SmartTrafficSystem {
         for (String pair : pairs) {
             String[] kv = pair.split(":", 2);
             if (kv.length == 2) {
-                String key = kv[0].trim().replaceAll("^\"|\"$", "");
-                String val = kv[1].trim().replaceAll("^\"|\"$", "");
+                String key = kv[0].trim().replace("\\\"", "").replace("\"", "").replace("\\", "").trim();
+                String val = kv[1].trim().replace("\\\"", "").replace("\"", "").replace("\\", "").trim();
                 map.put(key, val);
             }
         }
@@ -233,13 +237,56 @@ public class SmartTrafficSystem {
                 if (id != null && !id.trim().isEmpty()) {
                     id = id.trim().toUpperCase();
                     globalController.addJunction(id);
+                    if (body.containsKey("x") && body.containsKey("y")) {
+                        try {
+                            double x = Double.parseDouble(body.get("x"));
+                            double y = Double.parseDouble(body.get("y"));
+                            globalController.setJunctionPosition(id, x, y);
+                            dbService.saveJunctionPosition(id, x, y);
+                            supabaseService.saveJunction(id, x, y);
+                        } catch (Exception ignored) {}
+                    } else {
+                        dbService.saveJunction(id);
+                    }
                     log("Web API: Added junction " + id);
-                    dbService.saveJunction(id);
                     sendJsonResponse(exchange, 200, "{\"success\":true,\"message\":\"Junction " + id + " added.\"}");
                     return;
                 }
             }
             sendJsonResponse(exchange, 400, "{\"success\":false,\"error\":\"Invalid junction id\"}");
+        }
+    }
+
+    static class UpdateJunctionPositionHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJsonResponse(exchange, 204, "");
+                return;
+            }
+            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                Map<String, String> body = parseJsonSimple(readRequestBody(exchange));
+                String id = body.get("id");
+                String xStr = body.get("x");
+                String yStr = body.get("y");
+                if (id != null && xStr != null && yStr != null) {
+                    try {
+                        id = id.trim().toUpperCase();
+                        double x = Double.parseDouble(xStr);
+                        double y = Double.parseDouble(yStr);
+                        globalController.setJunctionPosition(id, x, y);
+                        dbService.saveJunctionPosition(id, x, y);
+                        supabaseService.saveJunction(id, x, y);
+                        log(String.format("Web API: Saved junction %s position (x=%.0f, y=%.0f) to Database", id, x, y));
+                        sendJsonResponse(exchange, 200, "{\"success\":true,\"message\":\"Junction " + id + " position updated.\"}");
+                        return;
+                    } catch (Exception ex) {
+                        sendJsonResponse(exchange, 400, "{\"success\":false,\"error\":\"" + escapeJson(ex.getMessage()) + "\"}");
+                        return;
+                    }
+                }
+            }
+            sendJsonResponse(exchange, 400, "{\"success\":false,\"error\":\"Invalid position payload\"}");
         }
     }
 
@@ -700,6 +747,18 @@ public class SmartTrafficSystem {
         }
         sb.append("],");
 
+        // 1b. Junction Coordinates (for draggable map & DB sync)
+        sb.append("\"junctionPositions\":{");
+        int jpCount = 0;
+        for (Map.Entry<String, double[]> entry : c.getAllJunctionPositions().entrySet()) {
+            if (jpCount++ > 0) sb.append(",");
+            sb.append("\"").append(escapeJson(entry.getKey())).append("\":{");
+            sb.append("\"x\":").append((int)Math.round(entry.getValue()[0])).append(",");
+            sb.append("\"y\":").append((int)Math.round(entry.getValue()[1]));
+            sb.append("}");
+        }
+        sb.append("},");
+
         // 2. Roads
         sb.append("\"roads\":[");
         int rCount = 0;
@@ -794,7 +853,12 @@ public class SmartTrafficSystem {
         sb.append("USE `smart_traffic_db`;\n\n");
 
         for (String j : c.getNetwork().getJunctions()) {
-            sb.append("INSERT INTO `junctions` (`id`) VALUES ('").append(j).append("') ON DUPLICATE KEY UPDATE `id`=`id`;\n");
+            double[] pos = c.getJunctionPosition(j);
+            int x = pos != null ? (int)Math.round(pos[0]) : 0;
+            int y = pos != null ? (int)Math.round(pos[1]) : 0;
+            sb.append("INSERT INTO `junctions` (`id`, `x_coord`, `y_coord`) VALUES ('")
+              .append(j).append("', ").append(x).append(", ").append(y)
+              .append(") ON DUPLICATE KEY UPDATE `x_coord`=").append(x).append(", `y_coord`=").append(y).append(";\n");
         }
         sb.append("\n");
 
@@ -859,12 +923,37 @@ public class SmartTrafficSystem {
         public boolean isConnected() { return connected; }
 
         public void saveJunction(String id) {
+            saveJunctionPosition(id, 0, 0);
+        }
+
+        public void saveJunctionPosition(String id, double x, double y) {
             if (!connected || connection == null) return;
-            try (PreparedStatement ps = connection.prepareStatement("INSERT IGNORE INTO junctions (id) VALUES (?)")) {
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO junctions (id, x_coord, y_coord) VALUES (?, ?, ?) " +
+                    "ON DUPLICATE KEY UPDATE x_coord=?, y_coord=?")) {
                 ps.setString(1, id);
+                ps.setInt(2, (int) Math.round(x));
+                ps.setInt(3, (int) Math.round(y));
+                ps.setInt(4, (int) Math.round(x));
+                ps.setInt(5, (int) Math.round(y));
                 ps.executeUpdate();
             } catch (Exception ex) {
-                log("[DB Error] Failed to save junction: " + ex.getMessage());
+                log("[DB Error] Failed to save junction position: " + ex.getMessage());
+            }
+        }
+
+        public void loadJunctionsFromDb(TrafficController controller) {
+            if (!connected || connection == null) return;
+            try (Statement stmt = connection.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT id, x_coord, y_coord FROM junctions WHERE x_coord != 0 OR y_coord != 0")) {
+                while (rs.next()) {
+                    String id = rs.getString("id");
+                    int x = rs.getInt("x_coord");
+                    int y = rs.getInt("y_coord");
+                    controller.setJunctionPosition(id, x, y);
+                }
+            } catch (Exception ex) {
+                log("[DB] Could not load junction positions: " + ex.getMessage());
             }
         }
 
@@ -961,6 +1050,33 @@ public class SmartTrafficSystem {
 
         public String getConfigJson() {
             return "{\"url\":\"" + escapeJson(url) + "\",\"bucket\":\"" + escapeJson(bucket) + "\",\"configured\":" + configured + "}";
+        }
+
+        public void saveJunction(String id, double x, double y) {
+            if (!configured) return;
+            try {
+                String base = url;
+                if (base.contains("/rest/v1")) {
+                    base = base.substring(0, base.indexOf("/rest/v1"));
+                }
+                if (!base.endsWith("/")) base += "/";
+                String targetUrl = base + "rest/v1/junctions";
+                String body = "[{\"id\":\"" + escapeJson(id) + "\",\"x_coord\":" + (int)Math.round(x) + ",\"y_coord\":" + (int)Math.round(y) + "}]";
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(targetUrl))
+                        .header("apikey", apiKey)
+                        .header("Authorization", "Bearer " + apiKey)
+                        .header("Content-Type", "application/json")
+                        .header("Prefer", "resolution=merge-duplicates")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build();
+                httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                        .thenAccept(res -> {
+                            if (res.statusCode() >= 200 && res.statusCode() < 300) {
+                                log("[Supabase] Synced junction " + id + " position to public.junctions table.");
+                            }
+                        });
+            } catch (Exception ignored) {}
         }
 
         public String uploadSnapshot(String jsonSnapshot) {
@@ -1200,6 +1316,7 @@ public class SmartTrafficSystem {
     // ------------------------------------------------------------------
 
     public static void buildDemoNetwork(TrafficController c) {
+        c.initDefaultPositions();
         String[] junctions = {"J1","J2","J3","J4","J5","J6","J7","J8","J9","J10","J11","J12"};
         for (String j : junctions) c.addJunction(j);
 
@@ -1761,11 +1878,86 @@ class TrafficController {
     private final PriorityQueue<RoutingRequest> requestQueue = new PriorityQueue<>(RoutingRequest.PRIORITY_ORDER);
     private final Map<String, EmergencyVehicle> vehicles = new LinkedHashMap<>();
     private final Map<String, RoutingRequest> requestsById = new HashMap<>();
+    private final Map<String, double[]> junctionPositions = new ConcurrentHashMap<>();
     private final RoutePlanner planner = new DijkstraRoutePlanner();
     private int requestCounter = 0;
 
+    public void initDefaultPositions() {
+        if (junctionPositions.isEmpty()) {
+            junctionPositions.put("J1",  new double[]{90,  190});
+            junctionPositions.put("J2",  new double[]{220, 80});
+            junctionPositions.put("J3",  new double[]{380, 80});
+            junctionPositions.put("J4",  new double[]{530, 80});
+            junctionPositions.put("J5",  new double[]{240, 220});
+            junctionPositions.put("J6",  new double[]{400, 220});
+            junctionPositions.put("J7",  new double[]{90,  320});
+            junctionPositions.put("J8",  new double[]{220, 340});
+            junctionPositions.put("J9",  new double[]{380, 340});
+            junctionPositions.put("J10", new double[]{530, 340});
+            junctionPositions.put("J11", new double[]{670, 220});
+            junctionPositions.put("J12", new double[]{670, 110});
+        }
+    }
+
+    public void setJunctionPosition(String id, double x, double y) {
+        junctionPositions.put(id, new double[]{x, y});
+        savePositionsToFile();
+    }
+
+    public double[] getJunctionPosition(String id) {
+        return junctionPositions.get(id);
+    }
+
+    public Map<String, double[]> getAllJunctionPositions() {
+        return Collections.unmodifiableMap(junctionPositions);
+    }
+
+    public void savePositionsToFile() {
+        try {
+            File f = new File("database/junction_positions.json");
+            if (!f.getParentFile().exists()) f.getParentFile().mkdirs();
+            StringBuilder sb = new StringBuilder("{");
+            int c = 0;
+            for (Map.Entry<String, double[]> e : junctionPositions.entrySet()) {
+                if (c++ > 0) sb.append(",");
+                sb.append("\"").append(e.getKey()).append("\":{\"x\":")
+                  .append((int)Math.round(e.getValue()[0])).append(",\"y\":")
+                  .append((int)Math.round(e.getValue()[1])).append("}");
+            }
+            sb.append("}");
+            Files.writeString(f.toPath(), sb.toString(), StandardCharsets.UTF_8);
+        } catch (Exception ignored) {}
+    }
+
+    public void loadPositionsFromFile() {
+        try {
+            File f = new File("database/junction_positions.json");
+            if (!f.exists()) f = new File("E:/New folder/database/junction_positions.json");
+            if (f.exists()) {
+                String content = Files.readString(f.toPath(), StandardCharsets.UTF_8).trim();
+                java.util.regex.Pattern p = java.util.regex.Pattern.compile("\"([^\"]+)\"\\s*:\\s*\\{\\s*\"x\"\\s*:\\s*([0-9.]+)\\s*,\\s*\"y\"\\s*:\\s*([0-9.]+)\\s*\\}");
+                java.util.regex.Matcher m = p.matcher(content);
+                while (m.find()) {
+                    String jId = m.group(1);
+                    double x = Double.parseDouble(m.group(2));
+                    double y = Double.parseDouble(m.group(3));
+                    junctionPositions.put(jId, new double[]{x, y});
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
     RoadNetwork getNetwork() { return network; }
-    void addJunction(String id) { network.addJunction(id); }
+    void addJunction(String id) {
+        network.addJunction(id);
+        if (!junctionPositions.containsKey(id)) {
+            int count = network.getJunctions().size();
+            int col = ((count - 1) % 5) + 1;
+            int row = ((count - 1) / 5) + 1;
+            junctionPositions.put(id, new double[]{120 * col, 80 * row});
+            savePositionsToFile();
+        }
+    }
     void addRoad(String from, String to, double time, boolean twoWay) { network.addRoad(from, to, time, twoWay); }
 
     void registerVehicle(EmergencyVehicle v) {
@@ -1880,12 +2072,16 @@ class TrafficController {
         requestQueue.clear();
         vehicles.clear();
         requestsById.clear();
+        junctionPositions.clear();
+        savePositionsToFile();
         requestCounter = 0;
     }
 
     boolean deleteJunction(String id) {
         boolean removed = network.removeJunction(id);
         if (removed) {
+            junctionPositions.remove(id);
+            savePositionsToFile();
             for (EmergencyVehicle v : vehicles.values()) {
                 if (v.getPosition().equals(id)) {
                     v.setStatus(VehicleStatus.UNREACHABLE);

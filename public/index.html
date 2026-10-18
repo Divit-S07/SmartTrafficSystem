@@ -51,7 +51,10 @@
       <!-- Network Visualizer Card -->
       <div class="card map-card">
         <div class="card-header">
-          <h2>🗺️ Live Road Network Map</h2>
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <h2>🗺️ Live Road Network Map</h2>
+            <span class="pill" style="background:rgba(6,182,212,0.15); color:var(--accent-cyan); border:1px solid rgba(6,182,212,0.3); font-size:11px; padding:3px 8px;">✋ Drag junctions to set position (auto-saves to DB)</span>
+          </div>
           <div class="legend" id="mapLegend">
             <span class="legend-item"><span class="swatch swatch-clear"></span> <strong>Clear</strong> <span class="legend-badge" id="badgeClear">0</span></span>
             <span class="legend-item"><span class="swatch swatch-congested"></span> <strong>Congested</strong> <span class="legend-badge" id="badgeCongested">0</span></span>

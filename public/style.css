@@ -281,6 +281,27 @@ body {
 .dot.closed { background: var(--accent-rose); }
 .dot.route { background: var(--accent-cyan); box-shadow: 0 0 6px var(--accent-cyan); }
 
+.swatch {
+  width: 16px;
+  height: 6px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.swatch-clear { background: #334155; border: 1px solid #64748b; }
+.swatch-congested { background: var(--accent-amber); box-shadow: 0 0 4px rgba(245, 158, 11, 0.5); }
+.swatch-closed { background: var(--accent-rose); border: 1px dashed #f43f5e; }
+.swatch-route { background: var(--accent-cyan); box-shadow: 0 0 6px var(--accent-cyan); }
+
+.legend-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #f1f5f9;
+  margin-left: 3px;
+}
+
 /* Canvas */
 .canvas-container {
   width: 100%;
@@ -291,12 +312,16 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 #networkCanvas {
   display: block;
   max-width: 100%;
   height: auto;
+  cursor: default;
+  touch-action: none;
+  user-select: none;
 }
 
 /* Tables */
