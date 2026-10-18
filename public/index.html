@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vegam City — Smart Traffic & Emergency Routing Desk</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo-icon">🚦</div>
+      <div>
+        <h1>Vegam City Traffic Control Desk</h1>
+        <p class="subtitle">Smart Traffic Management & Emergency Vehicle Routing Engine</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="badge badge-online" id="statusServer">● Server: Online (Java SE)</div>
+      <div class="badge badge-db" id="statusDb">● MySQL: Ready</div>
+      <div class="badge badge-cloud" id="statusCloud">● Supabase: Ready</div>
+    </div>
+  </header>
+
+  <!-- Quick Action Toolbar -->
+  <section class="toolbar">
+    <div class="toolbar-group">
+      <button class="btn btn-primary" onclick="loadSampleData()">📥 Load Sample Dataset</button>
+      <button class="btn btn-danger" onclick="clearAllData()">🗑️ Clear All (Empty Slate)</button>
+      <button class="btn btn-secondary" onclick="runScriptedDemo()">🧪 Run Scripted Demo</button>
+    </div>
+    <div class="toolbar-divider"></div>
+    <div class="toolbar-group">
+      <button class="btn btn-action" onclick="processNextEvent()">⏩ Process Next Event (FIFO)</button>
+      <button class="btn btn-action" onclick="processAllEvents()">⏭️ Process All Events</button>
+      <button class="btn btn-warning" onclick="processNextRequest()">🚨 Process Next Request (Priority)</button>
+      <button class="btn btn-warning" onclick="processAllRequests()">⚡ Process All Requests</button>
+    </div>
+    <div class="toolbar-divider"></div>
+    <div class="toolbar-group">
+      <button class="btn btn-cloud" onclick="backupToSupabase()">☁️ Backup to Supabase</button>
+      <button class="btn btn-outline" onclick="exportSqlDump()">💾 Export MySQL Dump</button>
+    </div>
+  </section>
+
+  <!-- Main Container -->
+  <main class="main-layout">
+    <!-- Left Column: Interactive Map & Vehicles -->
+    <div class="left-column">
+      <!-- Network Visualizer Card -->
+      <div class="card map-card">
+        <div class="card-header">
+          <h2>🗺️ Live Road Network Map</h2>
+          <div class="legend" id="mapLegend">
+            <span class="legend-item"><span class="swatch swatch-clear"></span> <strong>Clear</strong> <span class="legend-badge" id="badgeClear">0</span></span>
+            <span class="legend-item"><span class="swatch swatch-congested"></span> <strong>Congested</strong> <span class="legend-badge" id="badgeCongested">0</span></span>
+            <span class="legend-item"><span class="swatch swatch-closed"></span> <strong>Closed</strong> <span class="legend-badge" id="badgeClosed">0</span></span>
+            <span class="legend-item"><span class="swatch swatch-route"></span> <strong>Active Route</strong> <span class="legend-badge" id="badgeRoute">0</span></span>
+          </div>
+        </div>
+        <div class="canvas-container">
+          <canvas id="networkCanvas" width="760" height="400"></canvas>
+        </div>
+      </div>
+
+      <!-- Emergency Vehicles Card -->
+      <div class="card">
+        <div class="card-header">
+          <h2>🚑 Emergency Vehicles Management</h2>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="pill" id="vehicleCount">0 Registered</span>
+            <button class="btn btn-sm btn-primary" onclick="switchTab('vehTab')">➕ Register Vehicle</button>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="data-table" id="vehiclesTable">
+            <thead>
+              <tr>
+                <th>Vehicle ID</th>
+                <th>Type</th>
+                <th>Position</th>
+                <th>Destination</th>
+                <th>Status</th>
+                <th>Current Route (Fastest Path)</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="vehicleList">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Roads & Junctions Management Card -->
+      <div class="card">
+        <div class="card-header">
+          <h2>🛣️ Road Segments & Junctions Manager</h2>
+          <div style="display:flex; gap:8px;">
+            <span class="pill" id="junctionCount">0 Junctions</span>
+            <span class="pill" id="roadCount">0 Roads</span>
+          </div>
+        </div>
+
+        <!-- Junctions Pills List -->
+        <div style="margin-bottom: 14px;">
+          <h4 style="font-size:12px; color:var(--text-muted); margin-bottom:6px;">Active Junctions (Click ✖ to delete):</h4>
+          <div id="junctionList" style="display:flex; flex-wrap:wrap; gap:6px;">
+            <span class="empty-state" style="padding:4px 8px;">No junctions added yet</span>
+          </div>
+        </div>
+
+        <!-- Roads Table -->
+        <div class="table-container" style="max-height: 220px; overflow-y:auto;">
+          <table class="data-table" id="roadsTable">
+            <thead>
+              <tr>
+                <th>From</th>
+                <th>To</th>
+                <th>Travel Time</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="roadsList">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Queues & Dispatch Controls -->
+    <div class="right-column">
+      <!-- Emergency Requests Queue (Priority Queue) -->
+      <div class="card">
+        <div class="card-header">
+          <h2>🎯 Emergency Requests (Priority Min-Heap)</h2>
+          <span class="pill pill-alert" id="requestCount">0 Pending</span>
+        </div>
+        <p class="card-help">Sorted by Severity (CRITICAL > HIGH > NORMAL), then arrival sequence.</p>
+        <div class="queue-list" id="requestsList">
+          <div class="empty-state">No pending emergency requests in priority queue</div>
+        </div>
+      </div>
+
+      <!-- Traffic Events Queue (Strict FIFO Queue) -->
+      <div class="card">
+        <div class="card-header">
+          <h2>⚠️ Traffic Events (FIFO Queue)</h2>
+          <span class="pill pill-warning" id="eventCount">0 Pending</span>
+        </div>
+        <p class="card-help">Closures, reopenings & congestion applied strictly in arrival order.</p>
+        <div class="queue-list" id="eventsList">
+          <div class="empty-state">No pending traffic events in FIFO queue</div>
+        </div>
+      </div>
+
+      <!-- Dispatch & Control Form Tabs -->
+      <div class="card control-card">
+        <div class="tabs">
+          <button class="tab-btn active" onclick="switchTab('requestTab')">🚨 Request</button>
+          <button class="tab-btn" onclick="switchTab('eventTab')">🚧 Event</button>
+          <button class="tab-btn" onclick="switchTab('vehTab')">🚑 Vehicle</button>
+          <button class="tab-btn" onclick="switchTab('roadTab')">🛣️ Road/Node</button>
+          <button class="tab-btn" onclick="switchTab('cloudTab')">☁️ Cloud</button>
+        </div>
+
+        <!-- Tab 1: Submit Routing Request -->
+        <div class="tab-content active" id="requestTab">
+          <form onsubmit="handleRequestSubmit(event)">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Vehicle ID</label>
+                <select id="reqVehicle" required></select>
+              </div>
+              <div class="form-group">
+                <label>Destination Junction</label>
+                <select id="reqDest" required></select>
+              </div>
+              <div class="form-group">
+                <label>Severity Level</label>
+                <select id="reqSeverity" required>
+                  <option value="CRITICAL">CRITICAL (Top Priority)</option>
+                  <option value="HIGH">HIGH Priority</option>
+                  <option value="NORMAL" selected>NORMAL Priority</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-warning btn-block">Submit Emergency Request</button>
+          </form>
+        </div>
+
+        <!-- Tab 2: Queue Traffic Event -->
+        <div class="tab-content" id="eventTab">
+          <form onsubmit="handleEventSubmit(event)">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Event Type</label>
+                <select id="evtType" onchange="toggleFactorInput()" required>
+                  <option value="CLOSE">Road Closure (Block Road)</option>
+                  <option value="REOPEN">Road Reopen (Clear Road)</option>
+                  <option value="CONGESTION">Congestion (Traffic Slowdown)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>From Junction</label>
+                <select id="evtFrom" required></select>
+              </div>
+              <div class="form-group">
+                <label>To Junction</label>
+                <select id="evtTo" required></select>
+              </div>
+              <div class="form-group" id="factorGroup" style="display:none;">
+                <label>Slowdown Factor</label>
+                <input type="number" id="evtFactor" step="0.1" min="1.0" value="1.5" placeholder="e.g. 1.5 = 50% slower">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-action btn-block">Queue Traffic Event</button>
+          </form>
+        </div>
+
+        <!-- Tab 3: Register Vehicle -->
+        <div class="tab-content" id="vehTab">
+          <form onsubmit="handleVehicleRegister(event)">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Vehicle ID</label>
+                <input type="text" id="vehId" placeholder="e.g. AMB1, FIRE2" required>
+              </div>
+              <div class="form-group">
+                <label>Vehicle Type</label>
+                <select id="vehType" required>
+                  <option value="AMBULANCE">AMBULANCE (Ambulance 🚑)</option>
+                  <option value="FIRE_ENGINE">FIRE_ENGINE (Fire Engine 🚒)</option>
+                  <option value="RESCUE">RESCUE (Rescue Unit 🚨)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Starting Junction</label>
+                <div style="display:flex; gap:6px;">
+                  <select id="vehStart" style="flex:1;"></select>
+                  <input type="text" id="vehStartCustom" placeholder="Or type new J... (e.g. J1)" style="flex:1;">
+                </div>
+                <small style="color:var(--text-dim); font-size:11px;">Pick an existing junction or type a new junction ID directly.</small>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">🚀 Register Emergency Vehicle</button>
+          </form>
+        </div>
+
+        <!-- Tab 4: Add Road or Junction -->
+        <div class="tab-content" id="roadTab">
+          <form onsubmit="handleJunctionSubmit(event)" style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--border-color);">
+            <div class="form-group">
+              <label>Add New Junction Node</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="juncId" placeholder="e.g. J1, J13" required style="flex:1;">
+                <button type="submit" class="btn btn-primary">Add Junction</button>
+              </div>
+            </div>
+          </form>
+
+          <form onsubmit="handleRoadSubmit(event)">
+            <div class="form-row">
+              <div class="form-group">
+                <label>From Junction</label>
+                <input type="text" id="roadFrom" placeholder="e.g. J1" required>
+              </div>
+              <div class="form-group">
+                <label>To Junction</label>
+                <input type="text" id="roadTo" placeholder="e.g. J2" required>
+              </div>
+              <div class="form-group">
+                <label>Travel Time (mins)</label>
+                <input type="number" id="roadTime" step="0.5" min="0.1" value="5.0" required>
+              </div>
+              <div class="form-group">
+                <label>Direction</label>
+                <select id="roadTwoWay">
+                  <option value="true">Two-Way (Both directions)</option>
+                  <option value="false">One-Way (Directed)</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-action btn-block">Add Road to Network</button>
+          </form>
+        </div>
+
+        <!-- Tab 5: Cloud Settings (Supabase) -->
+        <div class="tab-content" id="cloudTab">
+          <form onsubmit="handleCloudConfigSubmit(event)">
+            <div class="form-group">
+              <label>Supabase Project URL</label>
+              <input type="text" id="sbUrl" placeholder="https://xyzcompany.supabase.co">
+            </div>
+            <div class="form-group">
+              <label>Supabase Anon Key</label>
+              <input type="password" id="sbKey" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+            </div>
+            <div class="form-group">
+              <label>Cloud Storage Bucket</label>
+              <input type="text" id="sbBucket" value="traffic-backups">
+            </div>
+            <button type="submit" class="btn btn-cloud btn-block">Save Supabase Cloud Config</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Live Audit Log Feed -->
+  <footer class="log-section">
+    <div class="log-header">
+      <h3>📟 Control Desk Activity Log Feed</h3>
+      <button class="btn btn-sm" onclick="fetchLogs()">🔄 Refresh Logs</button>
+    </div>
+    <div class="log-feed" id="logFeed">
+      <div>[System] System ready. Add custom data manually or load sample dataset.</div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
